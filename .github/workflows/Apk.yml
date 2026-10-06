@@ -48,24 +48,28 @@ jobs:
         run: |
           mkdir -p extracted
           unzip -q "${{ inputs.zip_path }}" -d extracted
-          echo "=== Structure after unzip ==="
-          find extracted -maxdepth 3 -type d | head -40
-          echo "============================="
 
       - name: Locate project root
         id: find-root
         run: |
-          # Prefer the folder that contains settings.gradle.kts / settings.gradle
           PROJECT_ROOT=$(find extracted -name "settings.gradle.kts" -o -name "settings.gradle" | head -1 | xargs dirname)
-          
           if [ -z "$PROJECT_ROOT" ]; then
             echo "::error::Could not find settings.gradle(.kts)"
-            find extracted -name "*.gradle*" | head -20
             exit 1
           fi
-          
           echo "Project root: $PROJECT_ROOT"
           echo "project_root=$PROJECT_ROOT" >> $GITHUB_OUTPUT
+
+      - name: Fix Kotlin DSL compilation error
+        working-directory: ${{ steps.find-root.outputs.project_root }}
+        run: |
+          # Fix the "Unresolved reference: net" error in app/build.gradle.kts
+          sed -i 's|java\.net\.URI(u)\.toURL()|java.net.URI.create(u).toURL()|g' app/build.gradle.kts
+          # Alternative safer version if the above is not enough:
+          sed -i 's|as java\.net\.HttpURLConnection|as java.net.HttpURLConnection|g' app/build.gradle.kts
+          
+          echo "=== Fixed line ==="
+          grep -n "URI\|HttpURLConnection" app/build.gradle.kts || true
 
       - name: Set up JDK ${{ inputs.java_version }}
         uses: actions/setup-java@v4
@@ -77,26 +81,20 @@ jobs:
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Generate Gradle Wrapper (missing in ZIP)
+      - name: Generate Gradle Wrapper
         working-directory: ${{ steps.find-root.outputs.project_root }}
         run: |
-          # The ZIP only has gradle-wrapper.properties, not the actual gradlew scripts
-          # Generate them using the Gradle version declared in the properties file
           GRADLE_VERSION=$(grep distributionUrl gradle/wrapper/gradle-wrapper.properties | sed 's/.*gradle-\(.*\)-bin.zip/\1/')
           echo "Detected Gradle version: $GRADLE_VERSION"
           
-          # Install Gradle temporarily just to generate the wrapper
-          curl -sL https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip -o /tmp/gradle.zip
+          curl -sL "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle.zip
           unzip -q /tmp/gradle.zip -d /tmp
           /tmp/gradle-${GRADLE_VERSION}/bin/gradle wrapper --gradle-version ${GRADLE_VERSION}
-          
           chmod +x gradlew
-          ls -la gradlew gradle/wrapper/
 
       - name: Build APK
         working-directory: ${{ steps.find-root.outputs.project_root }}
         run: |
-          echo "Running: ./gradlew ${{ inputs.build_type }}"
           ./gradlew ${{ inputs.build_type }} --no-daemon --stacktrace
 
       - name: Upload APK
