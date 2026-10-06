@@ -3,9 +3,10 @@ name: Decompress ZIP and Build APK
 on:
   workflow_dispatch:
     inputs:
-      zip_url:
-        description: "Direct download URL of the ZIP file"
+      zip_path:
+        description: "Path to the ZIP file in the repository (relative to root)"
         required: true
+        default: "project.zip"          # ← change this to your actual ZIP filename/path
         type: string
       build_type:
         description: "Gradle task"
@@ -31,22 +32,28 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - name: Download ZIP
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Check ZIP exists
         run: |
-          echo "Downloading ZIP from: ${{ inputs.zip_url }}"
-          curl -L --fail --retry 3 --retry-delay 5 \
-            -A "Mozilla/5.0" \
-            -o project.zip \
-            "${{ inputs.zip_url }}"
-          ls -lh project.zip
+          if [ ! -f "${{ inputs.zip_path }}" ]; then
+            echo "::error::ZIP file not found at: ${{ inputs.zip_path }}"
+            echo "Files in the repository root:"
+            ls -la
+            exit 1
+          fi
+          echo "Found ZIP: ${{ inputs.zip_path }}"
+          ls -lh "${{ inputs.zip_path }}"
 
       - name: Decompress ZIP
         run: |
           mkdir -p extracted
-          unzip -q project.zip -d extracted
-          echo "=== Top-level structure ==="
-          find extracted -maxdepth 2 -type d | head -40
-          echo "==========================="
+          unzip -q "${{ inputs.zip_path }}" -d extracted
+          
+          echo "=== Structure after unzip ==="
+          find extracted -maxdepth 3 -type d | head -40
+          echo "============================="
 
       - name: Locate Android project root
         id: find-root
@@ -54,14 +61,14 @@ jobs:
           GRADLEW_PATH=$(find extracted -name "gradlew" -type f | head -1)
 
           if [ -z "$GRADLEW_PATH" ]; then
-            echo "::error::No gradlew found in the ZIP."
-            echo "Looking for build.gradle files instead:"
+            echo "::error::No gradlew found inside the ZIP."
+            echo "Available build.gradle files:"
             find extracted -name "build.gradle*" | head -20 || true
             exit 1
           fi
 
           PROJECT_ROOT=$(dirname "$GRADLEW_PATH")
-          echo "Project root detected: $PROJECT_ROOT"
+          echo "Project root: $PROJECT_ROOT"
           echo "project_root=$PROJECT_ROOT" >> $GITHUB_OUTPUT
           chmod +x "$GRADLEW_PATH"
 
