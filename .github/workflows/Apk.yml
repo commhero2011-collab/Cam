@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       zip_path:
-        description: "Path to the ZIP file in the repository (relative to root)"
+        description: "Path to the ZIP file in the repository"
         required: true
-        default: "project.zip"          # ← change this to your actual ZIP filename/path
+        default: "Project.zip"
         type: string
       build_type:
         description: "Gradle task"
@@ -24,7 +24,6 @@ on:
         options:
           - "17"
           - "21"
-          - "11"
 
 jobs:
   build:
@@ -39,7 +38,6 @@ jobs:
         run: |
           if [ ! -f "${{ inputs.zip_path }}" ]; then
             echo "::error::ZIP file not found at: ${{ inputs.zip_path }}"
-            echo "Files in the repository root:"
             ls -la
             exit 1
           fi
@@ -50,27 +48,24 @@ jobs:
         run: |
           mkdir -p extracted
           unzip -q "${{ inputs.zip_path }}" -d extracted
-          
           echo "=== Structure after unzip ==="
           find extracted -maxdepth 3 -type d | head -40
           echo "============================="
 
-      - name: Locate Android project root
+      - name: Locate project root
         id: find-root
         run: |
-          GRADLEW_PATH=$(find extracted -name "gradlew" -type f | head -1)
-
-          if [ -z "$GRADLEW_PATH" ]; then
-            echo "::error::No gradlew found inside the ZIP."
-            echo "Available build.gradle files:"
-            find extracted -name "build.gradle*" | head -20 || true
+          # Prefer the folder that contains settings.gradle.kts / settings.gradle
+          PROJECT_ROOT=$(find extracted -name "settings.gradle.kts" -o -name "settings.gradle" | head -1 | xargs dirname)
+          
+          if [ -z "$PROJECT_ROOT" ]; then
+            echo "::error::Could not find settings.gradle(.kts)"
+            find extracted -name "*.gradle*" | head -20
             exit 1
           fi
-
-          PROJECT_ROOT=$(dirname "$GRADLEW_PATH")
+          
           echo "Project root: $PROJECT_ROOT"
           echo "project_root=$PROJECT_ROOT" >> $GITHUB_OUTPUT
-          chmod +x "$GRADLEW_PATH"
 
       - name: Set up JDK ${{ inputs.java_version }}
         uses: actions/setup-java@v4
@@ -81,6 +76,22 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v4
+
+      - name: Generate Gradle Wrapper (missing in ZIP)
+        working-directory: ${{ steps.find-root.outputs.project_root }}
+        run: |
+          # The ZIP only has gradle-wrapper.properties, not the actual gradlew scripts
+          # Generate them using the Gradle version declared in the properties file
+          GRADLE_VERSION=$(grep distributionUrl gradle/wrapper/gradle-wrapper.properties | sed 's/.*gradle-\(.*\)-bin.zip/\1/')
+          echo "Detected Gradle version: $GRADLE_VERSION"
+          
+          # Install Gradle temporarily just to generate the wrapper
+          curl -sL https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip -o /tmp/gradle.zip
+          unzip -q /tmp/gradle.zip -d /tmp
+          /tmp/gradle-${GRADLE_VERSION}/bin/gradle wrapper --gradle-version ${GRADLE_VERSION}
+          
+          chmod +x gradlew
+          ls -la gradlew gradle/wrapper/
 
       - name: Build APK
         working-directory: ${{ steps.find-root.outputs.project_root }}
